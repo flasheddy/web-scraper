@@ -3,6 +3,7 @@ import sys
 
 from config import MAX_CONCURRENCY, MAX_PAGES
 from crawl import crawl_site_async
+from json_report import write_json_report
 
 
 async def main():
@@ -43,25 +44,9 @@ async def main():
     page_data = await crawl_site_async(
         base_url, max_concurrency=max_concurrency, max_pages=max_pages
     )
-    print()
-    print(f"finishing crawl of: {base_url}", end="\n\n")
+    print(f"Crawling complete. Found {len(page_data)} pages.")
 
-    for val in page_data.values():
-        url = val["url"]
-        heading = val["heading"]
-        first_paragraph = val["first_paragraph"]
-        outgoing_links = val["outgoing_links"]
-        image_urls = val["image_urls"]
-        report = [
-            f"url: {url}",
-            f"heading: {heading}",
-            f"first paragraph: {first_paragraph}",
-            f"outgoing links: {outgoing_links}",
-            f"image urls: {image_urls}",
-        ]
-        print("\n".join(report), end="\n\n")
-
-    print(f"crawled {len(page_data)} pages")
+    write_json_report(page_data)
 
     sys.exit(0)
 
