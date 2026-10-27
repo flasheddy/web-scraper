@@ -1,6 +1,10 @@
-from typing import TypedDict
+import asyncio
+from asyncio import Lock, Semaphore
+from types import TracebackType
+from typing import Self, TypedDict
 from urllib.parse import urljoin, urlsplit
 
+from aiohttp import ClientError, ClientSession
 from bs4 import BeautifulSoup, Tag
 
 
@@ -10,6 +14,101 @@ class PageData(TypedDict):
     first_paragraph: str
     outgoing_links: list[str] | None
     image_urls: list[str] | None
+
+
+class AsyncCrawler:
+    def __init__(
+        self,
+        base_url: str,
+        max_concurrency: int,
+    ) -> None:
+        self.base_url: str = base_url
+        self.base_domain: str = urlsplit(base_url).netloc
+        self.page_data: dict[str, PageData] = {}
+        self.visited: set[str] = set()
+        self.lock: Lock = Lock()
+        self.max_concurrency: int = max_concurrency
+        self.semaphore: Semaphore = Semaphore(max_concurrency)
+        self.session: ClientSession | None = None
+
+    async def __aenter__(self) -> Self:
+        self.session = ClientSession()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        if self.session is not None:
+            await self.session.close()
+
+    async def add_page_visit(self, normalized_url: str) -> bool:
+        async with self.lock:
+            if normalized_url in self.visited:
+                return False
+            self.visited.add(normalized_url)
+            return True
+
+    async def get_html(self, url: str) -> str | None:
+        if self.session is None:
+            return
+        try:
+            async with self.session.get(
+                url, headers={"User-Agent": "BootCrawler/1.0"}
+            ) as response:
+                if response.status > 399:
+                    raise Exception(  # noqa: TRY002
+                        f"got HTTP error: {response.status} {response.reason}"
+                    )
+
+                content_type = response.headers.get("content-type", "")
+                if "text/html" not in content_type:
+                    raise Exception(f"got not-HTML response: {content_type}")  # noqa: TRY002
+
+                return await response.text()
+        except ClientError as e:
+            raise Exception(f"network error while fetching {url}: {e}")  # noqa: TRY002
+
+    async def crawl_page(
+        self,
+        current_url: str | None = None,
+    ) -> None:
+        if current_url is None:
+            current_url = self.base_url
+
+        current_url_obj = urlsplit(current_url)
+        if current_url_obj.netloc != self.base_domain:
+            return
+
+        normalized_url = normalize_url(current_url)
+        if not await self.add_page_visit(normalized_url):
+            return
+
+        async with self.semaphore:
+            print(f"crawling of: {current_url}...")
+            try:
+                html = await self.get_html(current_url)
+            except Exception as e:  # noqa: BLE001
+                print(f"skipping {current_url}: {e}")
+                return
+            if html is None:
+                return
+            page_info = extract_page_data(html, current_url)
+
+        async with self.lock:
+            self.page_data[normalized_url] = page_info
+
+        links = page_info["outgoing_links"]
+        if links is None:
+            return
+        tasks = [asyncio.create_task(self.crawl_page(link)) for link in links]
+        _ = await asyncio.gather(*tasks)
+
+    async def crawl(self) -> dict[str, PageData]:
+        await self.crawl_page(self.base_url)
+        return self.page_data
 
 
 def normalize_url(url: str) -> str:
@@ -93,3 +192,10 @@ def extract_page_data(html: str, page_url: str) -> PageData:
         outgoing_links=get_urls_from_html(html, page_url),
         image_urls=get_images_from_html(html, page_url),
     )
+
+
+async def crawl_site_async(
+    base_url: str, max_concurrency: int = 1
+) -> dict[str, PageData]:
+    async with AsyncCrawler(base_url, max_concurrency) as crawler:
+        return await crawler.crawl()
