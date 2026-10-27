@@ -1,7 +1,7 @@
 [project]
 name = "web-scraper"
 version = "0.1.0"
-description = "Add your description here"
+description = "Async Python web crawler that extracts page metadata into a JSON report"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
